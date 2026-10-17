@@ -1,0 +1,71 @@
+name: Build and Publish Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-and-publish.yml'
+      - 'CMakeLists.txt'
+      - 'build.bat'
+      - 'main.cpp'
+      - 'worker.cpp'
+      - 'src/**'
+      - 'vendor/**'
+      - 'patterns.json'
+      - 'sdk-cherry-pick.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-and-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Configure MSVC x64 Release
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build application and worker
+        run: cmake --build build --config Release --parallel
+
+      - name: Validate and package outputs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = 'build/bin/Release'
+          $required = @('dezlock-dump.exe', 'dezlock-worker.dll', 'patterns.json', 'sdk-cherry-pick.json')
+          foreach ($file in $required) {
+            if (!(Test-Path (Join-Path $output $file))) { throw "Missing build output: $file" }
+          }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item ($required | ForEach-Object { Join-Path $output $_ }) -Destination dist
+          Compress-Archive -Path dist/* -DestinationPath dezlock-dump-windows-x64.zip -Force
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dezlock-dump-windows-x64
+          path: dezlock-dump-windows-x64.zip
+          if-no-files-found: error
+
+      - name: Publish GitHub prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}-${{ github.run_attempt }}
+          target_commitish: ${{ github.sha }}
+          name: Windows x64 build ${{ github.run_number }}.${{ github.run_attempt }}
+          prerelease: true
+          generate_release_notes: true
+          files: |
+            dezlock-dump-windows-x64.zip
+            dist/dezlock-dump.exe
+            dist/dezlock-worker.dll
+          fail_on_unmatched_files: true
